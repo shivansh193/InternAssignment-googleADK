@@ -18,7 +18,15 @@ const chatRequestSchema = z.object({
   })).optional()
 });
 
-const orchestrator = new AgentOrchestrator();
+// Safely initialize the orchestrator with error handling
+let orchestrator: AgentOrchestrator;
+try {
+  orchestrator = new AgentOrchestrator();
+  console.log('API: AgentOrchestrator initialized successfully');
+} catch (error) {
+  console.error('API: Failed to initialize AgentOrchestrator:', error);
+  // We'll handle this error when the endpoint is called
+}
 
 // Optional: Implement rate limiting here or via Next.js Middleware
 // import { rateLimiter } from '@/backend-lib/middleware/rateLimiting'; // if adapting
@@ -37,6 +45,12 @@ export async function OPTIONS() {
 
 export async function POST(req: NextRequest) {
   try {
+    // Add debugging for Vercel environment
+    console.log('API: Environment variables check:', {
+      nodeEnv: process.env.NODE_ENV,
+      hasGeminiKey: !!process.env.GEMINI_API_KEY,
+      corsOrigin: process.env.CORS_ORIGIN
+    });
     // Optional: Rate limiting
     // const ip = req.ip ?? '127.0.0.1';
     // try {
@@ -84,6 +98,11 @@ export async function POST(req: NextRequest) {
     
     logger.info(`Chat request from session ${sessionId}: ${message.substring(0, 100)}...`);
 
+    console.log('API: Checking if orchestrator is initialized');
+    if (!orchestrator) {
+      throw new Error('AgentOrchestrator failed to initialize. Check the Gemini API key and other configuration.');
+    }
+    
     console.log('API: Calling orchestrator.routeMessage');
     const agentResponse = await orchestrator.routeMessage(message, context);
 
@@ -112,9 +131,24 @@ export async function POST(req: NextRequest) {
     console.error('API: Chat endpoint error:', error);
     logger.error('Chat endpoint error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    
+    // Create a safe error response that will always be valid JSON
     return NextResponse.json(
-      { error: 'Internal server error', message: errorMessage },
-      { status: 500 }
+      { 
+        error: true, 
+        message: 'Internal server error', 
+        details: errorMessage,
+        timestamp: new Date().toISOString()
+      },
+      { 
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+        }
+      }
     );
   }
 }
