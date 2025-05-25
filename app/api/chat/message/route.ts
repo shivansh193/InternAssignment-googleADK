@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AgentOrchestrator } from '../../../../backend/services/AgentOrchestrator';
-import { ChatResponse, ChatMessage, AgentType } from '../../../../backend/types/index';
+import { ChatResponse} from '../../../../backend/types/index';
 import { logger } from '../../../../backend/utils/logger';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
@@ -41,6 +41,9 @@ export async function OPTIONS() {
 }
 
 export async function POST(req: NextRequest) {
+  // Define sessionId at the top level so it's available in the catch block
+  let sessionId = 'unknown';
+  
   try {
     // Add debugging for Vercel environment
     console.log('API: Environment variables check:', {
@@ -97,7 +100,9 @@ export async function POST(req: NextRequest) {
       );
     }
     
-    const { message, sessionId = uuidv4(), context = [] } = validationResult.data;
+    const { message, context = [] } = validationResult.data;
+    // Update the sessionId variable declared at the top level
+    sessionId = validationResult.data.sessionId || uuidv4();
     
     logger.info(`Chat request from session ${sessionId}: ${message.substring(0, 100)}...`);
 
@@ -210,7 +215,7 @@ export async function POST(req: NextRequest) {
         error: true, 
         message: 'Internal server error', 
         details: errorMessage,
-        sessionId: typeof requestBody?.sessionId === 'string' ? requestBody.sessionId : 'unknown',
+        sessionId: sessionId || 'unknown',
         timestamp: new Date().toISOString()
       },
       { 
