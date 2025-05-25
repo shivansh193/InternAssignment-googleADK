@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { AgentOrchestrator } from '../../../../backend/services/AgentOrchestrator'; // Adjust path if needed
-import { ChatResponse } from '../../../../backend/types/index';
+import { AgentOrchestrator } from '../../../../backend/services/AgentOrchestrator';
+import { ChatResponse, ChatMessage, AgentType } from '../../../../backend/types/index';
 import { logger } from '../../../../backend/utils/logger';
 import { v4 as uuidv4 } from 'uuid';
-import { z } from 'zod'; // From backend-lib/middleware/validation
+import { z } from 'zod';
 
-// Re-define or import your Zod schema
+// Define the Zod schema for request validation
 const chatRequestSchema = z.object({
   message: z.string().min(1).max(2000),
   sessionId: z.string().optional(),
@@ -28,9 +28,6 @@ try {
   // We'll handle this error when the endpoint is called
 }
 
-// Optional: Implement rate limiting here or via Next.js Middleware
-// import { rateLimiter } from '@/backend-lib/middleware/rateLimiting'; // if adapting
-
 // Handle OPTIONS requests for CORS preflight
 export async function OPTIONS() {
   return new NextResponse(null, {
@@ -51,81 +48,156 @@ export async function POST(req: NextRequest) {
       hasGeminiKey: !!process.env.GEMINI_API_KEY,
       corsOrigin: process.env.CORS_ORIGIN
     });
-    // Optional: Rate limiting
-    // const ip = req.ip ?? '127.0.0.1';
-    // try {
-    //   await rateLimiter.consume(ip);
-    // } catch (rejRes: any) {
-    //   const secs = Math.round(rejRes.msBeforeNext / 1000) || 1;
-    //   return NextResponse.json(
-    //     { error: 'Too many requests', retryAfter: secs },
-    //     { status: 429, headers: { 'Retry-After': String(secs) } }
-    //   );
-    // }
 
     console.log('API: Received chat request');
     
-    const body = await req.json();
-    console.log('API: Request body received:', { 
-      message: body.message?.substring(0, 50) + '...',
-      sessionId: body.sessionId,
-      contextLength: body.context ? body.context.length : 0
-    });
-    
-    const validationResult = chatRequestSchema.safeParse(body);
-
-    if (!validationResult.success) {
-      console.error('API: Validation error:', validationResult.error.errors);
+    // Parse the request body
+    let requestBody;
+    try {
+      requestBody = await req.json();
+      console.log('API: Request body parsed successfully');
+    } catch (parseError) {
+      console.error('API: Failed to parse request body:', parseError);
       return NextResponse.json(
-        { error: 'Validation error', details: validationResult.error.errors },
-        { status: 400 }
+        { 
+          error: true, 
+          message: 'Invalid request body. Failed to parse JSON.'
+        },
+        { 
+          status: 400,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+          }
+        }
       );
     }
-
-    const { message, sessionId, context } = validationResult.data;
-    console.log('API: Validated data:', { 
-      messageLength: message.length,
-      sessionId,
-      contextLength: context ? context.length : 0,
-      contextSample: context && context.length > 0 ? {
-        firstMessage: {
-          id: context[0].id,
-          sender: context[0].sender,
-          timestampType: typeof context[0].timestamp
+    
+    // Validate the request body
+    const validationResult = chatRequestSchema.safeParse(requestBody);
+    if (!validationResult.success) {
+      console.error('API: Request validation failed:', validationResult.error);
+      return NextResponse.json(
+        { 
+          error: true, 
+          message: 'Invalid request format',
+          details: validationResult.error.errors
+        },
+        { 
+          status: 400,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+          }
         }
-      } : 'No context'
-    });
+      );
+    }
+    
+    const { message, sessionId = uuidv4(), context = [] } = validationResult.data;
     
     logger.info(`Chat request from session ${sessionId}: ${message.substring(0, 100)}...`);
 
-    console.log('API: Checking if orchestrator is initialized');
+    // First, check if the Gemini API key is available
+    if (!process.env.GEMINI_API_KEY) {
+      return NextResponse.json(
+        { 
+          error: true, 
+          message: 'Gemini API key is missing',
+          sessionId,
+          timestamp: new Date().toISOString()
+        },
+        { 
+          status: 500,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+          }
+        }
+      );
+    }
+
+    // Check if orchestrator is initialized
     if (!orchestrator) {
-      throw new Error('AgentOrchestrator failed to initialize. Check the Gemini API key and other configuration.');
+      return NextResponse.json(
+        { 
+          error: true, 
+          message: 'AgentOrchestrator failed to initialize',
+          sessionId,
+          timestamp: new Date().toISOString()
+        },
+        { 
+          status: 500,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+          }
+        }
+      );
     }
     
-    console.log('API: Calling orchestrator.routeMessage');
-    const agentResponse = await orchestrator.routeMessage(message, context);
+    try {
+      console.log('API: Calling orchestrator.routeMessage');
+      const agentResponse = await orchestrator.routeMessage(message, context);
 
-    const response: ChatResponse = {
-      message: agentResponse.content,
-      agent: agentResponse.agent,
-      timestamp: new Date(),
-      sessionId: sessionId || uuidv4(),
-      toolsUsed: agentResponse.toolsUsed,
-      analysis: agentResponse.analysis,
-      specialistResponse: agentResponse.specialistResponse,
-      toolResults: agentResponse.toolResults,
-      formattedEquations: agentResponse.formattedEquations
-    };
+      logger.info(`Agent response from ${agentResponse.agent}: ${agentResponse.content.substring(0, 100)}...`);
 
-    console.log('API: Response generated:', {
-      agent: agentResponse.agent,
-      messagePreview: agentResponse.content.substring(0, 50) + '...',
-      toolsUsed: agentResponse.toolsUsed
-    });
+      // Prepare the response
+      const response: ChatResponse = {
+        message: agentResponse.content,
+        agent: agentResponse.agent,
+        timestamp: new Date(),
+        sessionId: sessionId,
+        toolsUsed: agentResponse.toolsUsed,
+        analysis: agentResponse.analysis,
+        specialistResponse: agentResponse.specialistResponse,
+        toolResults: agentResponse.toolResults,
+        formattedEquations: agentResponse.formattedEquations
+      };
 
-    logger.info(`Response generated by ${agentResponse.agent} agent`);
-    return NextResponse.json(response);
+      console.log('API: Response generated:', {
+        agent: agentResponse.agent,
+        messagePreview: agentResponse.content.substring(0, 50) + '...'
+      });
+
+      logger.info(`Response generated by ${agentResponse.agent} agent`);
+      
+      return NextResponse.json(response, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+        }
+      });
+    } catch (routeError) {
+      console.error('API: Error in orchestrator.routeMessage:', routeError);
+      return NextResponse.json(
+        { 
+          error: true, 
+          message: 'Error processing message',
+          details: routeError instanceof Error ? routeError.message : 'Unknown error',
+          sessionId,
+          timestamp: new Date().toISOString()
+        },
+        { 
+          status: 500,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+          }
+        }
+      );
+    }
 
   } catch (error) {
     console.error('API: Chat endpoint error:', error);
@@ -138,6 +210,7 @@ export async function POST(req: NextRequest) {
         error: true, 
         message: 'Internal server error', 
         details: errorMessage,
+        sessionId: typeof requestBody?.sessionId === 'string' ? requestBody.sessionId : 'unknown',
         timestamp: new Date().toISOString()
       },
       { 
