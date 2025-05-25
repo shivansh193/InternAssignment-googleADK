@@ -23,6 +23,18 @@ const orchestrator = new AgentOrchestrator();
 // Optional: Implement rate limiting here or via Next.js Middleware
 // import { rateLimiter } from '@/backend-lib/middleware/rateLimiting'; // if adapting
 
+// Handle OPTIONS requests for CORS preflight
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    },
+  });
+}
+
 export async function POST(req: NextRequest) {
   try {
     // Optional: Rate limiting
